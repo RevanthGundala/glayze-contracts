@@ -1,2 +1,2 @@
 @openzeppelin-contracts-upgradeable-5.0.2=dependencies/@openzeppelin-contracts-upgradeable-5.0.2
-@solmate-6.7.0=dependencies/solmate-6.7.0
+@solmate/=lib/solmate/src/
