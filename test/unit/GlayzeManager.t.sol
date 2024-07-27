@@ -19,7 +19,7 @@ contract GlayzeManagerTest is Test {
     address public bob = address(2);
     ERC20Mock public USDC;
     ERC20Mock public GLAYZE;
-    uint256 public constant STARTING_USER_BALANCE = 1000000e6;
+    uint256 public constant STARTING_USER_BALANCE = 10000000000e6;
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 1e6;
 
     event PostCreated(uint256 postId, address creator, string name, string symbol, string postURI, uint256 timestamp);
@@ -48,6 +48,7 @@ contract GlayzeManagerTest is Test {
         (address usdc, address glayze,) = helperConfig.activeNetworkConfig();
         USDC = ERC20Mock(usdc);
         GLAYZE = ERC20Mock(glayze);
+        GLAYZE.mint(owner, glayzeManager.MAX_SUPPLY());
     }
 
     function testInitialSetup() public view {
@@ -118,27 +119,340 @@ contract GlayzeManagerTest is Test {
         vm.stopPrank();
     }
 
-    function testBuyTokensWithoutGlayze() public {
+    function testBuyTokensWithoutGlayzeWithoutRealCreator() public {
+        vm.startPrank(address(glayzeManager));
+        glayzeManager.approve(address(glayzeManager), 0, type(uint256).max);
+        vm.stopPrank();
+
         USDC.mint(alice, STARTING_USER_BALANCE);
-        USDC.mint(owner, STARTING_USER_BALANCE);
         vm.startPrank(alice);
-        USDC.approve(address(glayzeManager), glayzeManager.MAX_SUPPLY());
+
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
         glayzeManager.createPost("Test Post", "TST", "");
-        uint256 aliceUsdcBalance = USDC.balanceOf(alice);
-        uint256 buyPrice = glayzeManager.getBuyPriceAfterFees(0, 1);
-        glayzeManager.buyTokens(0, 100, 0);
-        // vm.expectEmit(true, true, true, true);
-        // emit Trade(0, alice, true, 1, 1, 1, 1, block.timestamp);
-        assertEq(glayzeManager.balanceOf(alice, 0), 1, "Alice should have bought 1 token");
-        assertEq(USDC.balanceOf(alice), aliceUsdcBalance - buyPrice, "Alice should have paid the correct amount");
+        uint256 initialAliceUsdcBalance = USDC.balanceOf(alice);
+        uint256 initialContractBalance = glayzeManager.balanceOf(address(glayzeManager), 0);
+        uint256 initialAliceBalance = glayzeManager.balanceOf(alice, 0);
+        uint256 initialOwnerBalance = USDC.balanceOf(owner);
+
+        uint256 buyAmount = 100;
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, buyAmount);
+        uint256 buyPrice = glayzeManager.getBuyPrice(0, buyAmount);
+
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) =
+            glayzeManager.getFeeSplit(0, buyPrice);
+
+        // Expect the Trade event
+        vm.expectEmit(true, true, true, true);
+        emit Trade(0, alice, true, 0, buyPrice, buyAmount, 100, buyPrice, block.timestamp);
+
+        // Expect the TradeFees event
+        vm.expectEmit(true, true, true, true);
+        emit TradeFees(0, protocolFee, contractCreatorFee, realCreatorFee, block.timestamp);
+
+        // Buy tokens
+        glayzeManager.buyTokens(0, buyAmount, 0);
+
+        // Tokens
+        assertEq(
+            glayzeManager.balanceOf(alice, 0), initialAliceBalance + buyAmount, "Alice should have bought 100 tokens"
+        );
+        assertEq(
+            glayzeManager.balanceOf(address(glayzeManager), 0),
+            initialContractBalance - buyAmount,
+            "Contract balance should decrease by 100"
+        );
+
+        // USDC
+        assertEq(USDC.balanceOf(address(glayzeManager)), buyPrice, "Contract should be paid");
+        assertEq(
+            USDC.balanceOf(owner),
+            initialOwnerBalance + protocolFee + realCreatorFee,
+            "Owner should have received the protocol fee"
+        );
+        assertEq(
+            USDC.balanceOf(alice),
+            initialAliceUsdcBalance - buyPriceAfterFees + contractCreatorFee,
+            "Alice should have received the contract creator fee"
+        );
+
+        assertEq(glayzeManager.totalValueDeposited(), buyPrice, "Total value deposited should be the buy price");
         vm.stopPrank();
     }
 
-    // function testBuyTokensWithGlayzeWithRealCreator() public {}
+    function testBuyTokensWithoutGlayzeWithRealCreator() public {
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        vm.startPrank(alice);
 
-    // function testBuyTokensWithGlayzeWithoutRealCreator() public {}
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
 
-    // function testBuyTokensRevertsWithInsufficientBalance() public {}
+        glayzeManager.createPost("Test Post", "TST", "");
+        vm.stopPrank();
+
+        vm.startPrank(owner);
+        glayzeManager.setRealCreator(0, bob);
+        vm.stopPrank();
+        (,,,, address realCreator) = glayzeManager.posts(0);
+        assertEq(realCreator, bob, "Real creator should be set");
+        vm.startPrank(alice);
+        uint256 initialAliceUsdcBalance = USDC.balanceOf(alice);
+        uint256 initialContractBalance = glayzeManager.balanceOf(address(glayzeManager), 0);
+        uint256 initialAliceBalance = glayzeManager.balanceOf(alice, 0);
+        uint256 initialOwnerBalance = USDC.balanceOf(owner);
+        uint256 initialBobBalance = USDC.balanceOf(bob);
+
+        uint256 buyAmount = 100;
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, buyAmount);
+        uint256 buyPrice = glayzeManager.getBuyPrice(0, buyAmount);
+
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) =
+            glayzeManager.getFeeSplit(0, buyPrice);
+
+        // Expect the Trade event
+        vm.expectEmit(true, true, true, true);
+        emit Trade(0, alice, true, 0, buyPrice, buyAmount, 100, buyPrice, block.timestamp);
+
+        // Expect the TradeFees event
+        vm.expectEmit(true, true, true, true);
+        emit TradeFees(0, protocolFee, contractCreatorFee, realCreatorFee, block.timestamp);
+
+        // Buy tokens
+        glayzeManager.buyTokens(0, buyAmount, 0);
+
+        // Assertions
+        // Tokens
+        assertEq(
+            glayzeManager.balanceOf(alice, 0), initialAliceBalance + buyAmount, "Alice should have bought 100 tokens"
+        );
+        assertEq(
+            glayzeManager.balanceOf(address(glayzeManager), 0),
+            initialContractBalance - buyAmount,
+            "Contract balance should decrease by 100"
+        );
+
+        // USDC
+        assertEq(USDC.balanceOf(address(glayzeManager)), buyPrice, "Contract should be paid");
+        assertEq(
+            USDC.balanceOf(owner), initialOwnerBalance + protocolFee, "Owner should have received the protocol fee"
+        );
+        assertEq(
+            USDC.balanceOf(bob), initialBobBalance + realCreatorFee, "Bob should have received the real creator fee"
+        );
+        assertEq(
+            USDC.balanceOf(alice),
+            initialAliceUsdcBalance - buyPriceAfterFees + contractCreatorFee,
+            "Alice should have received the contract creator fee"
+        );
+        assertEq(glayzeManager.totalValueDeposited(), buyPrice, "Total value deposited should be the buy price");
+        vm.stopPrank();
+    }
+
+    function testBuyTokensWithGlayzeGreaterThanProtocolFeeWithoutRealCreator() public {
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        GLAYZE.mint(alice, STARTING_USER_BALANCE);
+        vm.startPrank(alice);
+
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
+        GLAYZE.approve(address(glayzeManager), type(uint256).max);
+
+        glayzeManager.createPost("Test Post", "TST", "");
+
+        uint256 initialAliceUsdcBalance = USDC.balanceOf(alice);
+        uint256 initialContractBalance = glayzeManager.balanceOf(address(glayzeManager), 0);
+        uint256 initialAliceBalance = glayzeManager.balanceOf(alice, 0);
+        uint256 initialOwnerBalance = USDC.balanceOf(owner);
+        uint256 initialAliceGlayzeBalance = GLAYZE.balanceOf(alice);
+
+        uint256 buyAmount = 100;
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, buyAmount);
+        uint256 buyPrice = glayzeManager.getBuyPrice(0, buyAmount);
+
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) =
+            glayzeManager.getFeeSplit(0, buyPrice);
+
+        // Expect the Trade event
+        vm.expectEmit(true, true, true, true);
+        emit Trade(0, alice, true, 100, buyPrice, buyAmount, 100, buyPrice, block.timestamp);
+
+        // Expect the TradeFees event
+        vm.expectEmit(true, true, true, true);
+        emit TradeFees(0, protocolFee, contractCreatorFee, realCreatorFee, block.timestamp);
+
+        // Buy tokens
+        glayzeManager.buyTokens(0, buyAmount, 100);
+
+        // Tokens
+        assertEq(
+            glayzeManager.balanceOf(alice, 0), initialAliceBalance + buyAmount, "Alice should have bought 100 tokens"
+        );
+        assertEq(
+            glayzeManager.balanceOf(address(glayzeManager), 0),
+            initialContractBalance - buyAmount,
+            "Contract balance should decrease by 100"
+        );
+
+        // USDC
+        assertEq(USDC.balanceOf(address(glayzeManager)), buyPrice, "Contract should be paid");
+        assertEq(
+            USDC.balanceOf(owner), initialOwnerBalance + realCreatorFee, "Owner should have received the protocol fee"
+        );
+        assertEq(
+            USDC.balanceOf(alice),
+            initialAliceUsdcBalance - buyPriceAfterFees + contractCreatorFee + protocolFee,
+            "Alice should have not used usdc for protocol fee"
+        );
+        assertEq(
+            GLAYZE.balanceOf(alice), initialAliceGlayzeBalance - protocolFee, "Alice should have her new glayze amount"
+        );
+
+        assertEq(glayzeManager.totalValueDeposited(), buyPrice, "Total value deposited should be the buy price");
+        vm.stopPrank();
+    }
+
+    function testBuyTokensWithGlayzeLessThanProtocolFeeWithoutRealCreator() public {
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        GLAYZE.mint(alice, STARTING_USER_BALANCE);
+        vm.startPrank(alice);
+
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
+        GLAYZE.approve(address(glayzeManager), type(uint256).max);
+
+        glayzeManager.createPost("Test Post", "TST", "");
+
+        uint256 initialAliceUsdcBalance = USDC.balanceOf(alice);
+        uint256 initialContractBalance = glayzeManager.balanceOf(address(glayzeManager), 0);
+        uint256 initialAliceBalance = glayzeManager.balanceOf(alice, 0);
+        uint256 initialOwnerBalance = USDC.balanceOf(owner);
+        uint256 initialAliceGlayzeBalance = GLAYZE.balanceOf(alice);
+
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, 100);
+        uint256 buyPrice = glayzeManager.getBuyPrice(0, 100);
+
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) =
+            glayzeManager.getFeeSplit(0, buyPrice);
+
+        // Expect the Trade event
+        vm.expectEmit(true, true, true, true);
+        emit Trade(0, alice, true, 1, buyPrice, 100, 100, buyPrice, block.timestamp);
+
+        // Expect the TradeFees event
+        vm.expectEmit(true, true, true, true);
+        emit TradeFees(0, protocolFee, contractCreatorFee, realCreatorFee, block.timestamp);
+
+        // Buy tokens
+        glayzeManager.buyTokens(0, 100, 1);
+
+        // Tokens
+        assertEq(glayzeManager.balanceOf(alice, 0), initialAliceBalance + 100, "Alice should have bought 100 tokens");
+        assertEq(
+            glayzeManager.balanceOf(address(glayzeManager), 0),
+            initialContractBalance - 100,
+            "Contract balance should decrease by 100"
+        );
+
+        // USDC
+        assertEq(USDC.balanceOf(address(glayzeManager)), buyPrice, "Contract should be paid");
+        assertEq(
+            USDC.balanceOf(owner),
+            initialOwnerBalance + realCreatorFee + protocolFee - 1,
+            "Owner should have received the protocol fee"
+        );
+        assertEq(
+            USDC.balanceOf(alice),
+            initialAliceUsdcBalance - buyPriceAfterFees + contractCreatorFee + 1,
+            "Alice should have used usdc for protocol fee"
+        );
+        assertEq(GLAYZE.balanceOf(alice), initialAliceGlayzeBalance - 1, "Alice should have her new glayze amount");
+
+        assertEq(glayzeManager.totalValueDeposited(), buyPrice, "Total value deposited should be the buy price");
+        vm.stopPrank();
+    }
+
+    function testBuyTokensWithGlayzeLessThanProtocolFeeWithRealCreator() public {
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        GLAYZE.mint(alice, STARTING_USER_BALANCE);
+        vm.startPrank(alice);
+
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
+        GLAYZE.approve(address(glayzeManager), type(uint256).max);
+
+        glayzeManager.createPost("Test Post", "TST", "");
+        vm.stopPrank();
+
+        vm.startPrank(owner);
+        glayzeManager.setRealCreator(0, bob);
+        vm.stopPrank();
+        (,,,, address realCreator) = glayzeManager.posts(0);
+        assertEq(realCreator, bob, "Real creator should be set");
+        vm.startPrank(alice);
+        uint256 initialAliceUsdcBalance = USDC.balanceOf(alice);
+        uint256 initialContractBalance = glayzeManager.balanceOf(address(glayzeManager), 0);
+        uint256 initialAliceBalance = glayzeManager.balanceOf(alice, 0);
+        uint256 initialOwnerBalance = USDC.balanceOf(owner);
+        uint256 initialBobBalance = USDC.balanceOf(bob);
+
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, 100);
+        uint256 buyPrice = glayzeManager.getBuyPrice(0, 100);
+
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) =
+            glayzeManager.getFeeSplit(0, buyPrice);
+
+        // Expect the Trade event
+        vm.expectEmit(true, true, true, true);
+        emit Trade(0, alice, true, 1, buyPrice, 100, 100, buyPrice, block.timestamp);
+
+        // Expect the TradeFees event
+        vm.expectEmit(true, true, true, true);
+        emit TradeFees(0, protocolFee, contractCreatorFee, realCreatorFee, block.timestamp);
+
+        // Buy tokens
+        glayzeManager.buyTokens(0, 100, 1);
+
+        // Assertions
+        // Tokens
+        assertEq(glayzeManager.balanceOf(alice, 0), initialAliceBalance + 100, "Alice should have bought 100 tokens");
+        assertEq(
+            glayzeManager.balanceOf(address(glayzeManager), 0),
+            initialContractBalance - 100,
+            "Contract balance should decrease by 100"
+        );
+
+        // USDC
+        assertEq(USDC.balanceOf(address(glayzeManager)), buyPrice, "Contract should be paid");
+        assertEq(
+            USDC.balanceOf(owner), initialOwnerBalance + protocolFee - 1, "Owner should have received the protocol fee"
+        );
+        assertEq(
+            USDC.balanceOf(bob), initialBobBalance + realCreatorFee, "Bob should have received the real creator fee"
+        );
+        assertEq(
+            USDC.balanceOf(alice),
+            initialAliceUsdcBalance - buyPriceAfterFees + contractCreatorFee + 1,
+            "Alice should have received the contract creator fee"
+        );
+        assertEq(glayzeManager.totalValueDeposited(), buyPrice, "Total value deposited should be the buy price");
+        vm.stopPrank();
+    }
+
+    function testBuyTokensRevertsWithERC20InsufficientBalance() public {
+        USDC.mint(alice, glayzeManager.USDC_CREATION_PAYMENT());
+        vm.startPrank(alice);
+
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
+        glayzeManager.createPost("Test Post", "TST", "");
+        uint256 buyPrice = glayzeManager.getBuyPrice(0, 100);
+        (uint256 protocolFee,,) = glayzeManager.getFeeSplit(0, buyPrice);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, alice, 0, protocolFee));
+
+        // Buy tokens
+        glayzeManager.buyTokens(0, 100, 0);
+        vm.stopPrank();
+    }
 
     function testBuyTokensRevertsWithInvalidPostId() public {
         vm.startPrank(alice);
@@ -147,22 +461,190 @@ contract GlayzeManagerTest is Test {
         vm.stopPrank();
     }
 
-    // function testSellTokensWithoutGlayze() public {}
+    function testBuyTokensRevertsWithTokenAmountZero() public {
+        vm.startPrank(alice);
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        USDC.approve(address(glayzeManager), glayzeManager.USDC_CREATION_PAYMENT());
+        glayzeManager.createPost("Test Post", "TST", "");
+        vm.expectRevert(abi.encodeWithSelector(GlayzeManager.TokenAmountZero.selector, 0));
+        glayzeManager.buyTokens(0, 0, 0);
+        vm.stopPrank();
+    }
+
+    function testSellTokensWithoutGlayze() public {
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        vm.startPrank(alice);
+
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
+
+        glayzeManager.createPost("Test Post", "TST", "");
+
+        // Buy tokens
+        glayzeManager.buyTokens(0, 100, 0);
+        uint256 sellAmount = 100;
+        uint256 initialAliceUsdcBalance = USDC.balanceOf(alice);
+        uint256 initialContractBalance = glayzeManager.balanceOf(address(glayzeManager), 0);
+        uint256 initialAliceBalance = glayzeManager.balanceOf(alice, 0);
+        uint256 initialOwnerBalance = USDC.balanceOf(owner);
+        uint256 sellPrice = glayzeManager.getSellPrice(0, sellAmount);
+        uint256 sellPriceAfterFees = glayzeManager.getSellPriceAfterFees(0, sellAmount);
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) =
+            glayzeManager.getFeeSplit(0, sellPrice);
+
+        vm.expectEmit(true, true, true, true);
+        emit Trade(0, alice, false, 0, sellPrice, sellAmount, 0, 0, block.timestamp);
+
+        vm.expectEmit(true, true, true, true);
+        emit TradeFees(0, protocolFee, contractCreatorFee, realCreatorFee, block.timestamp);
+
+        glayzeManager.sellTokens(0, sellAmount, 0);
+
+        // Tokens
+        assertEq(
+            glayzeManager.balanceOf(alice, 0), initialAliceBalance - sellAmount, "Alice should have sold 100 tokens"
+        );
+        assertEq(
+            glayzeManager.balanceOf(address(glayzeManager), 0),
+            initialContractBalance + sellAmount,
+            "Contract balance should increase by 100"
+        );
+
+        // USDC
+        assertEq(
+            USDC.balanceOf(alice),
+            initialAliceUsdcBalance + sellPriceAfterFees + contractCreatorFee,
+            "Alice should have received the buy amount"
+        );
+        assertEq(
+            USDC.balanceOf(owner),
+            initialOwnerBalance + protocolFee + realCreatorFee,
+            "Owner should have received the protocol fee"
+        );
+
+        assertEq(
+            glayzeManager.totalValueDeposited(),
+            glayzeManager.getBuyPrice(0, 100) - sellPrice,
+            "Total value deposited should be buy - sell price"
+        );
+        vm.stopPrank();
+    }
 
     // function testSellTokensWithGlayzeWithRealCreator() public {}
 
-    // function testSellTokensWithGlayzeWithoutRealCreator() public {}
+    function testSellTokensWithGlayzeWithoutRealCreator() public {
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        GLAYZE.mint(alice, 100);
+        vm.startPrank(alice);
 
-    // function testSellTokensRevertsWithInsufficientBalance() public {}
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
+        GLAYZE.approve(address(glayzeManager), 100);
 
-    // function testSellTokensRevertsWithInsufficientSupply() public {}
+        glayzeManager.createPost("Test Post", "TST", "");
 
-    // function testSellTokensRevertsWithInsufficientTokenBalance() public {}
+        // Buy tokens
+        glayzeManager.buyTokens(0, 100, 0);
+        uint256 sellAmount = 100;
+        uint256 initialAliceUsdcBalance = USDC.balanceOf(alice);
+        uint256 initialContractBalance = glayzeManager.balanceOf(address(glayzeManager), 0);
+        uint256 initialAliceBalance = glayzeManager.balanceOf(alice, 0);
+        uint256 initialOwnerBalance = USDC.balanceOf(owner);
+        uint256 sellPrice = glayzeManager.getSellPrice(0, sellAmount);
+        uint256 sellPriceAfterFees = glayzeManager.getSellPriceAfterFees(0, sellAmount);
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) =
+            glayzeManager.getFeeSplit(0, sellPrice);
+
+        glayzeManager.sellTokens(0, sellAmount, 100);
+
+        // Tokens
+        assertEq(
+            glayzeManager.balanceOf(alice, 0), initialAliceBalance - sellAmount, "Alice should have sold 100 tokens"
+        );
+        assertEq(
+            glayzeManager.balanceOf(address(glayzeManager), 0),
+            initialContractBalance + sellAmount,
+            "Contract balance should increase by 100"
+        );
+
+        // USDC
+        assertEq(
+            USDC.balanceOf(alice),
+            initialAliceUsdcBalance + sellPriceAfterFees + contractCreatorFee + protocolFee,
+            "Alice should have received the buy amount"
+        );
+        assertEq(
+            USDC.balanceOf(owner), initialOwnerBalance + realCreatorFee, "Owner should have received the protocol fee"
+        );
+
+        assertEq(
+            glayzeManager.totalValueDeposited(),
+            glayzeManager.getBuyPrice(0, 100) - sellPrice,
+            "Total value deposited should be buy - sell price"
+        );
+        vm.stopPrank();
+    }
+
+    function testSellTokensRevertsWithInsufficientTokenSupply() public {
+        vm.startPrank(address(glayzeManager));
+        glayzeManager.approve(address(glayzeManager), 0, type(uint256).max);
+        vm.stopPrank();
+
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        vm.startPrank(alice);
+
+        // Approve GlayzeManager to spend Alice's USDC
+        USDC.approve(address(glayzeManager), type(uint256).max);
+        glayzeManager.createPost("Test Post", "TST", "");
+
+        uint256 buyAmount = 100;
+        // Buy tokens
+        glayzeManager.buyTokens(0, buyAmount, 0);
+        vm.expectRevert(abi.encodeWithSelector(GlayzeManager.InsufficientTokenSupply.selector, 0, buyAmount));
+        glayzeManager.sellTokens(0, buyAmount + 1, 0);
+
+        // Tokens
+        vm.stopPrank();
+    }
+
+    function testSellTokensRevertsWithInsufficientTokenBalance() public {
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        USDC.mint(owner, STARTING_USER_BALANCE);
+        vm.startPrank(alice);
+        USDC.approve(address(glayzeManager), type(uint256).max);
+        glayzeManager.createPost("Test Post", "TST", "");
+        uint256 buyAmount = 100;
+        glayzeManager.buyTokens(0, buyAmount, 0);
+        vm.stopPrank();
+
+        vm.startPrank(owner);
+        USDC.approve(address(glayzeManager), type(uint256).max);
+        glayzeManager.buyTokens(0, buyAmount, 0);
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        vm.expectRevert(abi.encodeWithSelector(GlayzeManager.InsufficientTokenBalance.selector, 0, alice, buyAmount));
+        glayzeManager.sellTokens(0, buyAmount + 1, 0);
+        vm.stopPrank();
+    }
 
     function testSellTokensRevertsWithInvalidPostId() public {
         vm.startPrank(alice);
         vm.expectRevert(abi.encodeWithSelector(GlayzeManager.InvalidPostId.selector, 0));
         glayzeManager.sellTokens(0, 1, 0);
+        vm.stopPrank();
+    }
+
+    function testSellTokensRevertsWithTokenAmountZero() public {
+        vm.startPrank(alice);
+        USDC.mint(alice, STARTING_USER_BALANCE);
+        USDC.approve(address(glayzeManager), glayzeManager.USDC_CREATION_PAYMENT());
+
+        // Call the function that should emit the event
+        glayzeManager.createPost("Test Post", "TST", "");
+
+        vm.expectRevert(abi.encodeWithSelector(GlayzeManager.TokenAmountZero.selector, 0));
+        glayzeManager.sellTokens(0, 0, 0);
         vm.stopPrank();
     }
 
@@ -247,28 +729,45 @@ contract GlayzeManagerTest is Test {
         assertEq(price, 0, "Price should be 0");
     }
 
-    // function testCanGetBuyPriceAfterFees() public view {
-    //     uint256 price = glayzeManager.getBuyPriceAfterFees(100, 100);
-    //     console2.log("Price: ", price);
-    // }
+    function testGetFeeSplit() public {
+        USDC.mint(alice, glayzeManager.USDC_CREATION_PAYMENT());
+        vm.startPrank(alice);
+        USDC.approve(address(glayzeManager), glayzeManager.USDC_CREATION_PAYMENT());
+        glayzeManager.createPost("Test Post", "TST  ", "");
+        uint256 price = glayzeManager.getBuyPrice(0, 1);
+        uint256 priceAfterFees = glayzeManager.getBuyPriceAfterFees(0, 1);
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) = glayzeManager.getFeeSplit(0, price);
+        assertEq(
+            protocolFee,
+            price * glayzeManager.PROTOCOL_FEE() / glayzeManager.DECIMALS(),
+            "Protocol fee should be correct"
+        );
+        assertEq(
+            contractCreatorFee,
+            price * glayzeManager.CONTRACT_CREATOR_FEE() / glayzeManager.DECIMALS(),
+            "Contract creator fee should be correct"
+        );
+        assertEq(
+            realCreatorFee,
+            price * glayzeManager.REAL_CREATOR_FEE() / glayzeManager.DECIMALS(),
+            "Real creator fee should be correct"
+        );
+        assertEq(
+            priceAfterFees,
+            price + protocolFee + contractCreatorFee + realCreatorFee,
+            "Price after fees should be correct"
+        );
+        vm.stopPrank();
+    }
 
-    // function testCanGetSellPriceAfterFees() public view {
-    //     uint256 price = glayzeManager.getSellPriceAfterFees(100, 100);
-    //     console2.log("Price: ", price);
-    // }
-
-    // function testCanGetBuyPrice() public view {
-    //     uint256 price = glayzeManager.getBuyPrice(1000000000000000000, 1000000000000000000);
-    //     console2.log("Price: ", price);
-    // }
-
-    // function testCanGetSellPrice() public view {
-    //     uint256 price = glayzeManager.getSellPrice(1000, 100);
-    //     console2.log("Price: ", price);
-    // }
-
-    // function testCanGetPrice() public view {
-    //     uint256 price = glayzeManager.getPrice(1000000000000000000, 1000000000000000000);
-    //     console2.log("Price: ", price);
-    // }
+    function testGetTotalFees() public {
+        USDC.mint(alice, glayzeManager.USDC_CREATION_PAYMENT());
+        vm.startPrank(alice);
+        USDC.approve(address(glayzeManager), glayzeManager.USDC_CREATION_PAYMENT());
+        glayzeManager.createPost("Test Post", "TST  ", "");
+        uint256 buyPrice = glayzeManager.getBuyPrice(0, 1000);
+        uint256 totalFees = glayzeManager.getTotalFees(0, buyPrice);
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, 1000);
+        assertEq(totalFees, buyPriceAfterFees - buyPrice, "Total fees should be correct");
+    }
 }

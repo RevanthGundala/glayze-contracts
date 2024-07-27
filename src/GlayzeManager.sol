@@ -3,11 +3,13 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "solmate/utils/ReentrancyGuard.sol";
 import {Owned} from "solmate/auth/Owned.sol";
 import {ERC6909} from "@solmate/tokens/ERC6909.sol";
+import {console2} from "forge-std/console2.sol";
 
 pragma solidity ^0.8.19;
 
 // V1 Has USDC and GLAYZE sent to EOA
 // Tokens remain in contract
+// Creators always get paid in usdc (cannot pay for glayze for their share, so lower their fee share)
 
 contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     ///////////////////
@@ -18,20 +20,20 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     error InvalidPostId(uint256 postId);
     error RealCreatorAlreadyExists(uint256 postId, address creator);
     error UserAlreadyReferred(address user);
+    error TokenAmountZero(uint256 postId);
 
     ///////////////////
     // Constants
     ///////////////////
     uint256 public constant DECIMALS = 1e6;
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 1e6; // 1 billion
-    uint256 public constant PROTOCOL_FEE = 10000; // 1%
     uint256 public constant SCALING_FACTOR = 3000; // Adjusted for 6 decimals
     uint256 public constant USDC_CREATION_PAYMENT = 1000000; // 1 USDC
-    uint256 public constant CONTRACT_CREATOR_FEE_SHARE = 1; // 0.01% of the 1% protocol fee
-    uint256 public constant REAL_CREATOR_FEE_SHARE = 500; // 50% of the 1% protocol fee
+    uint256 public constant PROTOCOL_FEE = 25000; // 2.5%
+    uint256 public constant REAL_CREATOR_FEE = 5000; // 0.5%
+    uint256 public constant CONTRACT_CREATOR_FEE = 100; // 0.01%
+    // TODO: calclate glayze token value
     uint256 public constant GLAYZE_REFERRAL_AMOUNT = 100000000000000000; // 100 GLAYZE
-
-    // TODO: Creators always get paid in usdc (cannot pay for glayze for their share, so lower their fee share)
 
     ///////////////////
     // State variables
@@ -92,8 +94,8 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         _;
     }
 
-    modifier notReferred(address user) {
-        if (usersReferred[user]) revert UserAlreadyReferred(user);
+    modifier tokenAmountNotZero(uint256 postId, uint256 tokenAmount) {
+        if (tokenAmount == 0) revert TokenAmountZero(postId);
         _;
     }
 
@@ -101,6 +103,7 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         USDC = IERC20(_usdc);
         GLAYZE = IERC20(_glayze);
         protocolFeeDestination = msg.sender;
+        super.setOperator(address(this), true);
         totalValueDeposited = 0;
         postIdCounter = 0;
     }
@@ -115,11 +118,11 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         tokenInfo[postId] = TokenInfo({price: 0, supply: 0});
         contractCreatorRemainingEarnings[postId] = USDC_CREATION_PAYMENT;
 
-        // Emit event
-        emit PostCreated(postId, msg.sender, name, symbol, postURI, block.timestamp);
-
         // Increment postIdCounter
         postIdCounter++;
+
+        // Emit event
+        emit PostCreated(postId, msg.sender, name, symbol, postURI, block.timestamp);
 
         // Mint MAX_SUPPLY posts to the contract
         _mint(address(this), postId, MAX_SUPPLY);
@@ -132,27 +135,31 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         external
         nonReentrant
         validPost(postId)
+        tokenAmountNotZero(postId, tokenAmount)
     {
-        (uint256 fee, uint256 newSupply, uint256 newPrice) = _updateBuyState(postId, tokenAmount);
+        (uint256 buyPrice, uint256 newSupply, uint256 newPrice) = _updateBuyState(postId, tokenAmount);
 
         // Emit event
-        emit Trade(postId, msg.sender, true, glayzeAmount, fee, tokenAmount, newSupply, newPrice, block.timestamp);
+        emit Trade(postId, msg.sender, true, glayzeAmount, buyPrice, tokenAmount, newSupply, newPrice, block.timestamp);
 
         // Distribute the fee to the creators
-        _handleBuy(postId, tokenAmount, fee, glayzeAmount);
+        _handleBuy(postId, tokenAmount, buyPrice, glayzeAmount);
     }
 
     function sellTokens(uint256 postId, uint256 tokenAmount, uint256 glayzeAmount)
         external
         nonReentrant
         validPost(postId)
+        tokenAmountNotZero(postId, tokenAmount)
     {
-        (uint256 fee, uint256 newSupply, uint256 newPrice) = _updateSellState(postId, tokenAmount);
+        (uint256 sellPrice, uint256 newSupply, uint256 newPrice) = _updateSellState(postId, tokenAmount);
 
         // Emit event
-        emit Trade(postId, msg.sender, false, glayzeAmount, tokenAmount, fee, newSupply, newPrice, block.timestamp);
+        emit Trade(
+            postId, msg.sender, false, glayzeAmount, sellPrice, tokenAmount, newSupply, newPrice, block.timestamp
+        );
 
-        _handleSell(postId, tokenAmount, fee, newPrice, glayzeAmount);
+        _handleSell(postId, tokenAmount, sellPrice, glayzeAmount);
     }
 
     function setRealCreator(uint256 postId, address realCreator) external onlyOwner validPost(postId) {
@@ -161,32 +168,42 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         emit RealCreatorSet(postId, realCreator, block.timestamp);
     }
 
-    // TODO: calclate glayze token value
-    function refer(address user, address referrer) external onlyOwner notReferred(user) {
+    function refer(address user, address referrer) external onlyOwner {
+        if (usersReferred[user]) revert UserAlreadyReferred(user);
         usersReferred[user] = true;
         emit Refer(user, referrer, block.timestamp);
-        bool success = GLAYZE.transferFrom(protocolFeeDestination, user, GLAYZE_REFERRAL_AMOUNT);
-        bool success2 = GLAYZE.transferFrom(protocolFeeDestination, referrer, GLAYZE_REFERRAL_AMOUNT);
-        require(success && success2, "TransferFailed");
+        require(
+            GLAYZE.transferFrom(protocolFeeDestination, user, GLAYZE_REFERRAL_AMOUNT)
+                && GLAYZE.transferFrom(protocolFeeDestination, referrer, GLAYZE_REFERRAL_AMOUNT),
+            "TransferFailed"
+        );
     }
 
-    function getBuyPriceAfterFees(uint256 postId, uint256 tokenAmount) external view returns (uint256) {
+    function getBuyPriceAfterFees(uint256 postId, uint256 tokenAmount)
+        public
+        view
+        validPost(postId)
+        returns (uint256)
+    {
         uint256 price = getBuyPrice(postId, tokenAmount);
-        uint256 protocolFee = price * PROTOCOL_FEE / DECIMALS;
-        return price + protocolFee;
+        return price + getTotalFees(postId, price);
     }
 
-    function getSellPriceAfterFees(uint256 postId, uint256 tokenAmount) external view returns (uint256) {
+    function getSellPriceAfterFees(uint256 postId, uint256 tokenAmount)
+        public
+        view
+        validPost(postId)
+        returns (uint256)
+    {
         uint256 price = getSellPrice(postId, tokenAmount);
-        uint256 protocolFee = price * PROTOCOL_FEE / DECIMALS;
-        return price - protocolFee;
+        return price - getTotalFees(postId, price);
     }
 
-    function getBuyPrice(uint256 postId, uint256 tokenAmount) public view returns (uint256) {
+    function getBuyPrice(uint256 postId, uint256 tokenAmount) public view validPost(postId) returns (uint256) {
         return getPrice(tokenInfo[postId].supply, tokenAmount);
     }
 
-    function getSellPrice(uint256 postId, uint256 tokenAmount) public view returns (uint256) {
+    function getSellPrice(uint256 postId, uint256 tokenAmount) public view validPost(postId) returns (uint256) {
         return getPrice(tokenInfo[postId].supply - tokenAmount, tokenAmount);
     }
 
@@ -200,22 +217,32 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         price = summation * SCALING_FACTOR / DECIMALS;
     }
 
-    function getFeeSplit(uint256 postId, uint256 fee) public view returns (uint256, uint256, uint256) {
-        uint256 realCreatorFee = posts[postId].realCreator == address(0) ? 0 : fee * REAL_CREATOR_FEE_SHARE / DECIMALS;
+    function getFeeSplit(uint256 postId, uint256 price)
+        public
+        view
+        validPost(postId)
+        returns (uint256, uint256, uint256)
+    {
         uint256 contractCreatorFee =
-            contractCreatorRemainingEarnings[postId] > 0 ? fee * CONTRACT_CREATOR_FEE_SHARE / DECIMALS : 0;
-        return (realCreatorFee, contractCreatorFee, fee - contractCreatorFee - realCreatorFee);
+            contractCreatorRemainingEarnings[postId] > 0 ? price * CONTRACT_CREATOR_FEE / DECIMALS : 0;
+        return (price * PROTOCOL_FEE / DECIMALS, contractCreatorFee, price * REAL_CREATOR_FEE / DECIMALS);
+    }
+
+    function getTotalFees(uint256 postId, uint256 price) public view validPost(postId) returns (uint256) {
+        uint256 contractCreatorFee =
+            contractCreatorRemainingEarnings[postId] > 0 ? price * CONTRACT_CREATOR_FEE / DECIMALS : 0;
+        return ((price * PROTOCOL_FEE / DECIMALS) + contractCreatorFee + (price * REAL_CREATOR_FEE / DECIMALS));
     }
 
     function _updateBuyState(uint256 postId, uint256 tokenAmount)
         internal
-        returns (uint256 fee, uint256 newSupply, uint256 newPrice)
+        returns (uint256 price, uint256 newSupply, uint256 newPrice)
     {
         // Store supply in local variable for reads
         uint256 supply = tokenInfo[postId].supply;
 
         // Get the price of the post
-        uint256 price = getBuyPrice(postId, tokenAmount);
+        price = getBuyPrice(postId, tokenAmount);
 
         // Calculate new supply and price
         newSupply = supply + tokenAmount;
@@ -225,22 +252,21 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         tokenInfo[postId].supply = newSupply;
         tokenInfo[postId].price = newPrice;
         totalValueDeposited += price;
-
-        return (price * PROTOCOL_FEE / DECIMALS, newSupply, newPrice);
+        return (price, newSupply, newPrice);
     }
 
     function _updateSellState(uint256 postId, uint256 tokenAmount)
         internal
-        returns (uint256 fee, uint256 newSupply, uint256 newPrice)
+        returns (uint256 sellPrice, uint256 newSupply, uint256 newPrice)
     {
         // Check if the supply is enough to sell
         uint256 supply = tokenInfo[postId].supply;
 
-        // Ensure atleast the amount of tokens to sell is available and atleast 1 token is left
-        if (supply <= tokenAmount) revert InsufficientTokenSupply(postId, supply);
+        // Ensure atleast the amount of tokens to sell is available
+        if (supply < tokenAmount) revert InsufficientTokenSupply(postId, supply);
 
         // Get the price of the post
-        uint256 price = getSellPrice(postId, tokenAmount);
+        sellPrice = getSellPrice(postId, tokenAmount);
 
         // Check if the user has enough tokens to sell
         if (balanceOf[msg.sender][postId] < tokenAmount) {
@@ -249,93 +275,115 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
 
         // Update tokenInfo and totalValueDeposited
         newSupply = supply - tokenAmount;
-        newPrice = tokenInfo[postId].price - price;
+        newPrice = tokenInfo[postId].price - sellPrice;
 
         tokenInfo[postId].supply = newSupply;
         tokenInfo[postId].price = newPrice;
-        totalValueDeposited -= price;
+        totalValueDeposited -= sellPrice;
 
-        return (price * PROTOCOL_FEE / DECIMALS, newSupply, newPrice);
+        return (sellPrice, newSupply, newPrice);
     }
 
-    function _handleBuy(uint256 postId, uint256 tokenAmount, uint256 fee, uint256 glayzeAmount) internal {
-        uint256 usdcPayment = fee;
-        uint256 glayzePayment = 0;
-
+    function _handleBuy(uint256 postId, uint256 tokenAmount, uint256 buyPrice, uint256 glayzeAmount) internal {
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) = getFeeSplit(postId, buyPrice);
+        uint256 protocolFeesPaidInGlayze = 0;
+        uint256 protocolFeesPaidInUsdc = protocolFee;
         // User is using glayze to pay for the purchase
         if (glayzeAmount > 0) {
-            if (glayzeAmount >= fee) {
-                glayzePayment = fee;
-                usdcPayment = 0;
+            if (glayzeAmount >= protocolFee) {
+                protocolFeesPaidInGlayze = protocolFee;
+                protocolFeesPaidInUsdc = 0;
             } else {
-                glayzePayment = glayzeAmount;
-                usdcPayment = fee - glayzePayment;
+                protocolFeesPaidInGlayze = glayzeAmount;
+                protocolFeesPaidInUsdc = protocolFee - glayzeAmount;
             }
         }
 
-        // Pay with GLAYZE
-        if (glayzePayment > 0) {
-            require(GLAYZE.transferFrom(msg.sender, protocolFeeDestination, glayzePayment), "GlayzeTransferFailed");
+        // Pay protocol fees with GLAYZE
+        if (protocolFeesPaidInGlayze > 0) {
+            require(
+                GLAYZE.transferFrom(msg.sender, protocolFeeDestination, protocolFeesPaidInGlayze),
+                "GlayzeTransferFailed"
+            );
         }
 
         // Make user pay remaining amount in USDC
-        if (usdcPayment > 0) {
-            require(USDC.transferFrom(msg.sender, protocolFeeDestination, usdcPayment), "USDCTransferFailed");
+        if (protocolFeesPaidInUsdc > 0) {
+            require(USDC.transferFrom(msg.sender, protocolFeeDestination, protocolFeesPaidInUsdc), "USDCTransferFailed");
         }
 
-        _distributeCreatorEarnings(postId, fee);
+        // Transfer price to contract
+        require(USDC.transferFrom(msg.sender, address(this), buyPrice), "USDCTransferFailed");
+
+        // Distribute creator earnings based on total usdcAmount
+        _distributeCreatorEarnings(postId, realCreatorFee, contractCreatorFee, protocolFee);
 
         // Transfer tokens to user
-        require(transferFrom(address(this), msg.sender, postId, tokenAmount), "BuyFailed");
+        // console2.log("Contract supply: ", balanceOf[address(this)][postId]);
+        // console2.log("User supply: ", balanceOf[msg.sender][postId]);
+        // require(transferFrom(address(this), msg.sender, postId, tokenAmount), "BuyFailed");
+        _transfer(address(this), msg.sender, postId, tokenAmount);
     }
 
-    function _handleSell(uint256 postId, uint256 tokenAmount, uint256 fee, uint256 price, uint256 glayzeAmount)
-        internal
-    {
-        uint256 usdcPayment = price - fee;
-        uint256 glayzePayment = 0;
+    function _handleSell(uint256 postId, uint256 tokenAmount, uint256 sellPrice, uint256 glayzeAmount) internal {
+        (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) = getFeeSplit(postId, sellPrice);
+        uint256 protocolFeesPaidInGlayze = 0;
+        uint256 protocolFeesPaidInUsdc = protocolFee;
 
         // User is using glayze to pay for the purchase
         if (glayzeAmount > 0) {
-            if (glayzeAmount >= fee) {
-                glayzePayment = fee;
+            if (glayzeAmount >= protocolFee) {
+                protocolFeesPaidInGlayze = protocolFee;
+                protocolFeesPaidInUsdc = 0;
             } else {
-                glayzePayment = glayzeAmount;
-                usdcPayment = price - fee - glayzePayment;
+                protocolFeesPaidInGlayze = glayzeAmount;
+                protocolFeesPaidInUsdc = protocolFee - glayzeAmount;
             }
         }
 
         // Pay with GLAYZE
-        if (glayzePayment > 0) {
-            require(GLAYZE.transferFrom(msg.sender, protocolFeeDestination, glayzePayment), "GlayzeTransferFailed");
+        if (protocolFeesPaidInGlayze > 0) {
+            require(
+                GLAYZE.transferFrom(msg.sender, protocolFeeDestination, protocolFeesPaidInGlayze),
+                "GlayzeTransferFailed"
+            );
         }
 
-        // Pay User USDC
-        require(USDC.transferFrom(protocolFeeDestination, msg.sender, usdcPayment), "USDCTransferFailed");
+        // Pay
+        if (protocolFeesPaidInUsdc > 0) {
+            require(USDC.transferFrom(msg.sender, protocolFeeDestination, protocolFeesPaidInUsdc), "USDCTransferFailed");
+        }
 
-        _distributeCreatorEarnings(postId, fee);
+        // Transfer price to sender
+        require(USDC.transfer(msg.sender, sellPrice), "USDCTransferFailed");
+
+        _distributeCreatorEarnings(postId, realCreatorFee, contractCreatorFee, protocolFee);
 
         // Transfer tokens to contract
         require(transferFrom(msg.sender, address(this), postId, tokenAmount), "SellFailed");
     }
 
-    function _distributeCreatorEarnings(uint256 postId, uint256 fee) internal {
-        (uint256 realCreatorFee, uint256 contractCreatorFee, uint256 protocolFee) = getFeeSplit(postId, fee);
-        require(protocolFee <= fee, "Fee calculation error");
-        emit TradeFees(
-            postId, fee - contractCreatorFee - realCreatorFee, contractCreatorFee, realCreatorFee, block.timestamp
-        );
+    function _distributeCreatorEarnings(
+        uint256 postId,
+        uint256 realCreatorFee,
+        uint256 contractCreatorFee,
+        uint256 protocolFee
+    ) internal {
+        emit TradeFees(postId, protocolFee, contractCreatorFee, realCreatorFee, block.timestamp);
         if (contractCreatorFee > 0) {
             require(
-                USDC.transferFrom(protocolFeeDestination, posts[postId].contractCreator, contractCreatorFee),
+                USDC.transferFrom(msg.sender, posts[postId].contractCreator, contractCreatorFee),
                 "ContractCreatorTransferFailed"
             );
         }
-        if (realCreatorFee > 0) {
-            require(
-                USDC.transferFrom(protocolFeeDestination, posts[postId].realCreator, realCreatorFee),
-                "RealCreatorTransferFailed"
-            );
-        }
+        // If the real creator hasn't signed up yet, use the contract owner as the real creator
+        address realCreator =
+            posts[postId].realCreator == address(0) ? protocolFeeDestination : posts[postId].realCreator;
+        require(USDC.transferFrom(msg.sender, realCreator, realCreatorFee), "RealCreatorTransferFailed");
+    }
+
+    function _transfer(address from, address to, uint256 postId, uint256 amount) internal {
+        balanceOf[from][postId] -= amount;
+        balanceOf[to][postId] += amount;
     }
 }
