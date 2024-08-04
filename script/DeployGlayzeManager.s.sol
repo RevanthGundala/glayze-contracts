@@ -8,10 +8,10 @@ import {HelperConfig} from "./HelperConfig.s.sol";
 contract DeployGlayzeManager is Script {
     function run() external returns (GlayzeManager, HelperConfig) {
         HelperConfig helperConfig = new HelperConfig();
-        (address usdc, address glayze, uint256 deployerKey) = helperConfig.activeNetworkConfig();
+        (address usdc, address aura, uint256 deployerKey) = helperConfig.activeNetworkConfig();
 
         vm.startBroadcast(deployerKey);
-        GlayzeManager glayzeManager = new GlayzeManager(usdc, glayze);
+        GlayzeManager glayzeManager = new GlayzeManager(usdc, aura);
         vm.stopBroadcast();
         return (glayzeManager, helperConfig);
     }

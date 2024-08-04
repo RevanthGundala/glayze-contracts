@@ -3,7 +3,7 @@ pragma solidity ^0.8.19;
 
 import {Script} from "forge-std/Script.sol";
 import {ERC20Mock} from "../test/mocks/ERC20Mock.sol";
-import {Glayze} from "../src/Glayze.sol";
+import {Aura} from "../src/Aura.sol";
 
 contract HelperConfig is Script {
     NetworkConfig public activeNetworkConfig;
@@ -12,7 +12,7 @@ contract HelperConfig is Script {
 
     struct NetworkConfig {
         address usdc;
-        address glayze;
+        address aura;
         uint256 deployerKey;
     }
 
@@ -22,20 +22,20 @@ contract HelperConfig is Script {
 
     constructor() {
         if (block.chainid == BASE_SEPOLIA_CHAIN_ID) {
-            Glayze glayze = new Glayze();
-            activeNetworkConfig = getBaseSepoliaEthConfig(address(glayze));
+            Aura aura = new Aura();
+            activeNetworkConfig = getBaseSepoliaEthConfig(address(aura));
         } else {
             activeNetworkConfig = getOrCreateAnvilEthConfig();
         }
     }
 
-    function getBaseSepoliaEthConfig(address glayze)
+    function getBaseSepoliaEthConfig(address aura)
         public
         view
         returns (NetworkConfig memory baseSepoliaNetworkConfig)
     {
         baseSepoliaNetworkConfig =
-            NetworkConfig({usdc: BASE_SEPOLIA_USDC, glayze: glayze, deployerKey: vm.envUint("PRIVATE_KEY")});
+            NetworkConfig({usdc: BASE_SEPOLIA_USDC, aura: aura, deployerKey: vm.envUint("PRIVATE_KEY")});
     }
 
     function getOrCreateAnvilEthConfig() public returns (NetworkConfig memory anvilNetworkConfig) {
@@ -46,13 +46,10 @@ contract HelperConfig is Script {
 
         vm.startBroadcast();
         ERC20Mock usdcMock = new ERC20Mock("USDC", "USDC", msg.sender, 1000e6);
-        ERC20Mock glayzeMock = new ERC20Mock("GLAYZE", "GLAYZE", msg.sender, 1000e6);
+        ERC20Mock auraMock = new ERC20Mock("AURA", "AURA", msg.sender, 1000e6);
         vm.stopBroadcast();
 
-        anvilNetworkConfig = NetworkConfig({
-            usdc: address(usdcMock),
-            glayze: address(glayzeMock),
-            deployerKey: DEFAULT_ANVIL_PRIVATE_KEY
-        });
+        anvilNetworkConfig =
+            NetworkConfig({usdc: address(usdcMock), aura: address(auraMock), deployerKey: DEFAULT_ANVIL_PRIVATE_KEY});
     }
 }
