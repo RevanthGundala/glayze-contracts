@@ -8,10 +8,6 @@ import {console2} from "forge-std/console2.sol";
 
 pragma solidity ^0.8.19;
 
-// V1 Has USDC and aura sent to EOA
-// Tokens remain in contract
-// Creators always get paid in usdc (cannot pay for aura for their share, so lower their fee share)
-
 contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     using FixedPointMathLib for uint256;
 
@@ -24,20 +20,13 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     error RealCreatorAlreadyExists(uint256 postId, address creator);
     error UserAlreadyReferred(address user);
     error SharesZero(uint256 postId);
-    error PostAlreadyExists(uint256 postId, string postURI);
+    error PostAlreadyExists(uint256 postId);
 
     ///////////////////
     // Constants
     ///////////////////
-    uint256 public constant DECIMALS = 1e4;
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 1e6; // 1 billion
     uint256 public constant SCALING_FACTOR = 1e6; // Adjusted for 6 decimals
-    uint256 public constant USDC_CREATION_PAYMENT = 1e6; // 1 USDC
-    uint256 public constant PROTOCOL_FEE = 250; // 2.5%
-    uint256 public constant REAL_CREATOR_FEE = 50; // 0.05%
-    uint256 public constant GLAYZE_CREATOR_FEE = 10; // 0.01%
-    // TODO: calclate aura token value
-    uint256 public constant AURA_REFERRAL_AMOUNT = 100000000000000000; // 100 aura
 
     ///////////////////
     // State variables
@@ -46,9 +35,12 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     IERC20 public immutable AURA;
     address public immutable protocolFeeDestination;
     uint256 public totalValueDeposited;
-    uint256 public postIdCounter;
+    uint256 public usdcCreationPayment;
+    uint256 public protocolFee;
+    uint256 public realCreatorFee;
+    uint256 public glayzeCreatorFee;
+    uint256 public auraReferralAmount;
     mapping(uint256 id => Post post) public posts;
-    mapping(string uri => uint256 postId) public postURIs;
     mapping(uint256 id => ShareInfo shareInfo) public shareInfo;
     mapping(uint256 id => uint256 remainingEarnings) public glayzeCreatorRemainingEarnings;
     mapping(address user => bool isReferred) public usersReferred;
@@ -93,7 +85,9 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     // Modifiers
     ///////////////////
     modifier validPost(uint256 postId) {
-        if (postId >= postIdCounter) revert InvalidPostId(postId);
+        if (posts[postId].glayzeCreator == address(0)) {
+            revert InvalidPostId(postId);
+        }
         _;
     }
 
@@ -107,36 +101,35 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         AURA = IERC20(_aura);
         protocolFeeDestination = msg.sender;
         totalValueDeposited = 0;
-        postIdCounter = 0;
+        usdcCreationPayment = 1e6; // 1 USDC
+        protocolFee = 250; // 2.5%
+        realCreatorFee = 50; // 0.05%
+        glayzeCreatorFee = 10; // 0.01%
+        auraReferralAmount = 1e6; // 1 aura
     }
 
-    function createPost(string memory name, string memory symbol, string memory postURI) external {
-        // Check if the postURI is unique
-        if (postURIs[postURI] != 0) revert PostAlreadyExists(postURIs[postURI], postURI);
-
-        // Set postIdCounter to local variable for reads
-        uint256 postId = postIdCounter;
+    function createPost(uint256 postId, string memory name, string memory symbol, string memory postURI) external {
+        // Check if the postId is unique
+        if (posts[postId].glayzeCreator != address(0)) {
+            revert PostAlreadyExists(postId);
+        }
 
         // Create post and initialize TokenInfo
         posts[postId] =
             Post({name: name, symbol: symbol, postURI: postURI, glayzeCreator: msg.sender, realCreator: address(0)});
         shareInfo[postId] = ShareInfo({price: 0, supply: 0});
-        postURIs[postURI] = postId;
 
         // Set remaining earnings for Glayze Creator
-        glayzeCreatorRemainingEarnings[postId] = USDC_CREATION_PAYMENT;
-
-        // Increment postIdCounter
-        postIdCounter++;
+        glayzeCreatorRemainingEarnings[postId] = usdcCreationPayment;
 
         // Emit event
         emit PostCreated(postId, msg.sender, name, symbol, postURI, block.timestamp);
 
-        // Mint MAX_SUPPLY posts to the contract
+        // Mint MAX_SUPPLY shares to the contract
         _mint(address(this), postId, MAX_SUPPLY);
 
-        // Transfer USDC_CREATION_PAYMENT to Protocol
-        require(USDC.transferFrom(msg.sender, protocolFeeDestination, USDC_CREATION_PAYMENT), "InsufficientUsdcBalance");
+        // Transfer usdcCreationPayment to Protocol
+        require(USDC.transferFrom(msg.sender, protocolFeeDestination, usdcCreationPayment), "InsufficientUsdcBalance");
     }
 
     function buyShares(uint256 postId, uint256 shares, uint256 aura)
@@ -168,8 +161,30 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         _handleSell(postId, shares, sellPrice, aura);
     }
 
+    function setUsdcCreationPayment(uint256 _usdcCreationPayment) external onlyOwner {
+        usdcCreationPayment = _usdcCreationPayment;
+    }
+
+    function setAuraReferralAmount(uint256 _auraReferralAmount) external onlyOwner {
+        auraReferralAmount = _auraReferralAmount;
+    }
+
+    function setPrtocolFee(uint256 _protocolFee) external onlyOwner {
+        protocolFee = _protocolFee;
+    }
+
+    function setGlazyCreatorFee(uint256 _glazyCreatorFee) external onlyOwner {
+        glayzeCreatorFee = _glazyCreatorFee;
+    }
+
+    function setRealCreatorFee(uint256 _realCreatorFee) external onlyOwner {
+        realCreatorFee = _realCreatorFee;
+    }
+
     function setRealCreator(uint256 postId, address realCreator) external onlyOwner validPost(postId) {
-        if (posts[postId].realCreator != address(0)) revert RealCreatorAlreadyExists(postId, realCreator);
+        if (posts[postId].realCreator != address(0)) {
+            revert RealCreatorAlreadyExists(postId, realCreator);
+        }
         posts[postId].realCreator = realCreator;
         emit RealCreatorSet(postId, realCreator, block.timestamp);
     }
@@ -179,20 +194,32 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         usersReferred[user] = true;
         emit Referral(user, referrer, block.timestamp);
         require(
-            AURA.transferFrom(protocolFeeDestination, user, AURA_REFERRAL_AMOUNT)
-                && AURA.transferFrom(protocolFeeDestination, referrer, AURA_REFERRAL_AMOUNT),
+            AURA.transferFrom(protocolFeeDestination, user, auraReferralAmount)
+                && AURA.transferFrom(protocolFeeDestination, referrer, auraReferralAmount),
             "TransferFailed"
         );
     }
 
-    function getBuyPriceAfterFees(uint256 postId, uint256 shares) public view validPost(postId) returns (uint256) {
+    function getBuyPriceAfterFees(uint256 postId, uint256 shares, uint256 aura)
+        public
+        view
+        validPost(postId)
+        returns (uint256)
+    {
         uint256 price = getBuyPrice(postId, shares);
-        return price + getTotalFees(postId, price);
+        uint256 priceAfterFees = price + getTotalFees(postId, price);
+        return priceAfterFees > aura ? priceAfterFees - aura : 0;
     }
 
-    function getSellPriceAfterFees(uint256 postId, uint256 shares) public view validPost(postId) returns (uint256) {
-        uint256 price = getSellPrice(postId, shares);
-        return price - getTotalFees(postId, price);
+    function getSellPriceAfterFees(uint256 postId, uint256 shares, uint256 aura)
+        public
+        view
+        validPost(postId)
+        returns (uint256)
+    {
+        uint256 price = getBuyPrice(postId, shares);
+        uint256 priceAfterFees = price - getTotalFees(postId, price);
+        return priceAfterFees > aura ? priceAfterFees - aura : 0;
     }
 
     function getBuyPrice(uint256 postId, uint256 shares) public view validPost(postId) returns (uint256) {
@@ -210,34 +237,31 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         uint256 summation = sum2 > sum1 ? sum2 - sum1 : 0;
 
         // Adjust for scaling factor
-        price = FixedPointMathLib.mulWadDown(summation, SCALING_FACTOR);
+        price = FixedPointMathLib.mulDivDown(summation, SCALING_FACTOR);
     }
 
-    // TODO: Remove variables and just return sum
     function getTotalFees(uint256 postId, uint256 price) public view validPost(postId) returns (uint256) {
-        uint256 protocolFee = FixedPointMathLib.mulWadDown(price, PROTOCOL_FEE);
-        uint256 glayzeCreatorFee =
-            glayzeCreatorRemainingEarnings[postId] > 0 ? FixedPointMathLib.mulWadDown(price, GLAYZE_CREATOR_FEE) : 0;
-        uint256 realCreatorFee = FixedPointMathLib.mulWadDown(price, REAL_CREATOR_FEE);
-        return protocolFee + glayzeCreatorFee + realCreatorFee;
+        uint256 glayzeCreatorFeeSplit =
+            glayzeCreatorRemainingEarnings[postId] > 0 ? FixedPointMathLib.mulDivDown(price, glayzeCreatorFee) : 0;
+        return FixedPointMathLib.mulDivDown(price, protocolFee) + glayzeCreatorFeeSplit
+            + FixedPointMathLib.mulDivDown(price, realCreatorFee);
     }
 
-    // TODO: Remove variables and just return
     function getFeeSplit(uint256 postId, uint256 totalFees)
         public
         view
         validPost(postId)
         returns (uint256, uint256, uint256)
     {
-        uint256 totalFeePercentage = PROTOCOL_FEE + GLAYZE_CREATOR_FEE + REAL_CREATOR_FEE;
-        uint256 protocolFeeDecimal = (totalFees * PROTOCOL_FEE) / totalFeePercentage;
-
+        uint256 totalFeePercentage = protocolFee + glayzeCreatorFee + realCreatorFee;
         uint256 glayzeCreatorFeeDecimal =
-            glayzeCreatorRemainingEarnings[postId] > 0 ? (totalFees * GLAYZE_CREATOR_FEE) / totalFeePercentage : 0;
+            glayzeCreatorRemainingEarnings[postId] > 0 ? (totalFees * glayzeCreatorFee) / totalFeePercentage : 0;
 
-        uint256 realCreatorFeeDecimal = (totalFees * REAL_CREATOR_FEE) / totalFeePercentage;
-
-        return (protocolFeeDecimal, glayzeCreatorFeeDecimal, realCreatorFeeDecimal);
+        return (
+            (totalFees * protocolFee) / totalFeePercentage,
+            glayzeCreatorFeeDecimal,
+            (totalFees * realCreatorFee) / totalFeePercentage
+        );
     }
 
     function _updateBuyState(uint256 postId, uint256 shares)
@@ -327,46 +351,53 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         emit TradeFees(postId, msg.sender, isBuy, feesPaidInAura, feesPaidInUsdc, block.timestamp);
         // Pay fees with aura
         if (feesPaidInAura > 0) {
-            (uint256 protocolFee, uint256 glayzeCreatorFee, uint256 realCreatorFee) =
+            (uint256 protocolFeeSplit, uint256 glayzeCreatorFeeSplit, uint256 realCreatorFeeSplit) =
                 getFeeSplit(postId, feesPaidInAura);
-            if (glayzeCreatorFee > 0) {
+            if (glayzeCreatorFeeSplit > 0) {
                 require(
-                    AURA.transferFrom(msg.sender, posts[postId].glayzeCreator, glayzeCreatorFee),
+                    AURA.transferFrom(msg.sender, posts[postId].glayzeCreator, glayzeCreatorFeeSplit),
                     "AuraGlayzeCreatorTransferFailed"
                 );
             }
             if (realCreator == address(0)) {
                 require(
-                    AURA.transferFrom(msg.sender, protocolFeeDestination, realCreatorFee + protocolFee),
+                    AURA.transferFrom(msg.sender, protocolFeeDestination, realCreatorFeeSplit + protocolFeeSplit),
                     "AuraRealCreatorFeeTransferFailed"
                 );
             } else {
-                require(AURA.transferFrom(msg.sender, realCreator, realCreatorFee), "AuraRealCreatorFeeTransferFailed");
                 require(
-                    AURA.transferFrom(msg.sender, protocolFeeDestination, protocolFee), "AuraProtocolFeeTransferFailed"
+                    AURA.transferFrom(msg.sender, realCreator, realCreatorFeeSplit), "AuraRealCreatorFeeTransferFailed"
+                );
+                require(
+                    AURA.transferFrom(msg.sender, protocolFeeDestination, protocolFeeSplit),
+                    "AuraProtocolFeeTransferFailed"
                 );
             }
         }
 
         // Make user pay remaining amount in USDC
         if (feesPaidInUsdc > 0) {
-            (uint256 protocolFee, uint256 glayzeCreatorFee, uint256 realCreatorFee) =
+            (uint256 protocolFeeSplit, uint256 glayzeCreatorFeeSplit, uint256 realCreatorFeeSplit) =
                 getFeeSplit(postId, feesPaidInUsdc);
-            if (glayzeCreatorFee > 0) {
+            if (glayzeCreatorFeeSplit > 0) {
+                console2.log("glayze creator", posts[postId].glayzeCreator);
                 require(
-                    USDC.transferFrom(msg.sender, posts[postId].glayzeCreator, glayzeCreatorFee),
+                    USDC.transferFrom(msg.sender, posts[postId].glayzeCreator, glayzeCreatorFeeSplit),
                     "USDCGlayzeCreatorTransferFailed"
                 );
             }
             if (realCreator == address(0)) {
                 require(
-                    USDC.transferFrom(msg.sender, protocolFeeDestination, realCreatorFee + protocolFee),
+                    USDC.transferFrom(msg.sender, protocolFeeDestination, realCreatorFeeSplit + protocolFeeSplit),
                     "USDCRealCreatorTransferFailed"
                 );
             } else {
-                require(USDC.transferFrom(msg.sender, realCreator, realCreatorFee), "USDCRealCreatorTransferFailed");
                 require(
-                    USDC.transferFrom(msg.sender, protocolFeeDestination, protocolFee), "USDCProtocolFeeTransferFailed"
+                    USDC.transferFrom(msg.sender, realCreator, realCreatorFeeSplit), "USDCRealCreatorTransferFailed"
+                );
+                require(
+                    USDC.transferFrom(msg.sender, protocolFeeDestination, protocolFeeSplit),
+                    "USDCProtocolFeeTransferFailed"
                 );
             }
         }

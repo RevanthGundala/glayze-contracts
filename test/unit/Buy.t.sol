@@ -9,6 +9,7 @@ import {ERC20Mock} from "../mocks/ERC20Mock.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {HelperConfig} from "../../script/HelperConfig.s.sol";
 import {DeployGlayzeManager} from "../../script/DeployGlayzeManager.s.sol";
+import {FixedPointMathLib} from "../../src/lib/FixedPointMathLib.sol";
 
 contract Buy is Test {
     GlayzeManager public glayzeManager;
@@ -290,12 +291,12 @@ contract Buy is Test {
     // }
 
     function testBuySharesRevertsWithERC20InsufficientBalance() public {
-        USDC.mint(alice, glayzeManager.USDC_CREATION_PAYMENT());
+        USDC.mint(alice, glayzeManager.usdcCreationPayment());
         vm.startPrank(alice);
 
         // Approve GlayzeManager to spend Alice's USDC
         USDC.approve(address(glayzeManager), type(uint256).max);
-        glayzeManager.createPost("Test Post", "TST", "");
+        glayzeManager.createPost(0, "Test Post", "TST", "");
         uint256 buyPrice = glayzeManager.getBuyPrice(0, 100);
         uint256 totalFees = glayzeManager.getTotalFees(0, buyPrice);
         (, uint256 glayzeCreatorUsdcFee,) = glayzeManager.getFeeSplit(0, totalFees);
@@ -318,34 +319,34 @@ contract Buy is Test {
     function testBuySharesRevertsWithTokenAmountZero() public {
         vm.startPrank(alice);
         USDC.mint(alice, STARTING_USER_BALANCE);
-        USDC.approve(address(glayzeManager), glayzeManager.USDC_CREATION_PAYMENT());
-        glayzeManager.createPost("Test Post", "TST", "");
+        USDC.approve(address(glayzeManager), glayzeManager.usdcCreationPayment());
+        glayzeManager.createPost(0, "Test Post", "TST", "");
         vm.expectRevert(abi.encodeWithSelector(GlayzeManager.SharesZero.selector, 0));
         glayzeManager.buyShares(0, 0, 0);
         vm.stopPrank();
     }
 
     function testGetFeeSplit() public {
-        USDC.mint(alice, glayzeManager.USDC_CREATION_PAYMENT());
+        USDC.mint(alice, glayzeManager.usdcCreationPayment());
         vm.startPrank(alice);
-        USDC.approve(address(glayzeManager), glayzeManager.USDC_CREATION_PAYMENT());
-        glayzeManager.createPost("Test Post", "TST  ", "");
+        USDC.approve(address(glayzeManager), glayzeManager.usdcCreationPayment());
+        glayzeManager.createPost(0, "Test Post", "TST", "");
         uint256 price = glayzeManager.getBuyPrice(0, 1);
-        uint256 priceAfterFees = glayzeManager.getBuyPriceAfterFees(0, 1);
+        uint256 priceAfterFees = glayzeManager.getBuyPriceAfterFees(0, 1, 0);
         (uint256 protocolFee, uint256 contractCreatorFee, uint256 realCreatorFee) = glayzeManager.getFeeSplit(0, price);
         assertEq(
             protocolFee,
-            price * glayzeManager.PROTOCOL_FEE() / glayzeManager.DECIMALS(),
+            (price * glayzeManager.protocolFee()) / FixedPointMathLib.PRECISION,
             "Protocol fee should be correct"
         );
         assertEq(
             contractCreatorFee,
-            price * glayzeManager.GLAYZE_CREATOR_FEE() / glayzeManager.DECIMALS(),
+            (price * glayzeManager.glayzeCreatorFee()) / FixedPointMathLib.PRECISION,
             "Contract creator fee should be correct"
         );
         assertEq(
             realCreatorFee,
-            price * glayzeManager.REAL_CREATOR_FEE() / glayzeManager.DECIMALS(),
+            (price * glayzeManager.realCreatorFee()) / FixedPointMathLib.PRECISION,
             "Real creator fee should be correct"
         );
         assertEq(
@@ -356,22 +357,51 @@ contract Buy is Test {
         vm.stopPrank();
     }
 
-    function testGetTotalFees() public {
-        USDC.mint(alice, glayzeManager.USDC_CREATION_PAYMENT());
+    function testGetBuyPriceAfterFeesWithoutAura() public {
+        USDC.mint(alice, glayzeManager.usdcCreationPayment());
         vm.startPrank(alice);
-        USDC.approve(address(glayzeManager), glayzeManager.USDC_CREATION_PAYMENT());
-        glayzeManager.createPost("Test Post", "TST  ", "");
+        USDC.approve(address(glayzeManager), glayzeManager.usdcCreationPayment());
+        glayzeManager.createPost(1811899344876110166, "Test Post", "TST", "");
+        uint256 buyPrice = glayzeManager.getBuyPrice(1811899344876110166, 1);
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(1811899344876110166, 1, 0);
+        assertEq(
+            buyPriceAfterFees,
+            buyPrice + glayzeManager.getTotalFees(1811899344876110166, buyPrice),
+            "Buy price after fees should be correct"
+        );
+    }
+
+    function testGetBuyPriceAfterFeesWithAura() public {
+        USDC.mint(alice, glayzeManager.usdcCreationPayment());
+        vm.startPrank(alice);
+        USDC.approve(address(glayzeManager), glayzeManager.usdcCreationPayment());
+        glayzeManager.createPost(1811899344876110166, "Test Post", "TST", "");
+        uint256 buyPrice = glayzeManager.getBuyPrice(1811899344876110166, 100234790);
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(1811899344876110166, 100234790, 20);
+        console2.log("Buy price: ", buyPriceAfterFees);
+        assertEq(
+            buyPriceAfterFees,
+            buyPrice + glayzeManager.getTotalFees(1811899344876110166, buyPrice) - 20,
+            "Buy price after fees should be correct"
+        );
+    }
+
+    function testGetTotalFees() public {
+        USDC.mint(alice, glayzeManager.usdcCreationPayment());
+        vm.startPrank(alice);
+        USDC.approve(address(glayzeManager), glayzeManager.usdcCreationPayment());
+        glayzeManager.createPost(0, "Test Post", "TST", "");
         uint256 buyPrice = glayzeManager.getBuyPrice(0, 1000);
         uint256 totalFees = glayzeManager.getTotalFees(0, buyPrice);
-        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, 1000);
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, 1000, 0);
         assertEq(totalFees, buyPriceAfterFees - buyPrice, "Total fees should be correct");
     }
 
     function testBuyPriceShouldBeZero() public {
-        USDC.mint(alice, glayzeManager.USDC_CREATION_PAYMENT());
+        USDC.mint(alice, glayzeManager.usdcCreationPayment());
         vm.startPrank(alice);
-        USDC.approve(address(glayzeManager), glayzeManager.USDC_CREATION_PAYMENT());
-        glayzeManager.createPost("Test Post", "TST", "");
+        USDC.approve(address(glayzeManager), glayzeManager.usdcCreationPayment());
+        glayzeManager.createPost(0, "Test Post", "TST", "");
         vm.stopPrank();
         uint256 price = glayzeManager.getBuyPrice(0, 1);
         assertEq(price, 0, "Price should be 0");
@@ -384,7 +414,7 @@ contract Buy is Test {
         USDC.mint(alice, STARTING_USER_BALANCE);
         vm.startPrank(alice);
         USDC.approve(address(glayzeManager), type(uint256).max);
-        glayzeManager.createPost("Test Post", "TST", "");
+        glayzeManager.createPost(0, "Test Post", "TST", "");
         uint256 initialAliceAuraBalance = AURA.balanceOf(alice);
         uint256 initialOwnerAuraBalance = AURA.balanceOf(owner);
         uint256 initialBobAuraBalance = AURA.balanceOf(bob);
@@ -403,7 +433,7 @@ contract Buy is Test {
     function buySharesWithoutAura(address realCreator) internal {
         // Approve GlayzeManager to spend Alice's USDC
         USDC.approve(address(glayzeManager), type(uint256).max);
-        glayzeManager.createPost("Test Post", "TST", "");
+        glayzeManager.createPost(0, "Test Post", "TST", "");
 
         if (realCreator != address(0)) {
             vm.stopPrank();
@@ -420,7 +450,7 @@ contract Buy is Test {
         uint256 initialRealCreatorUsdcBalance = USDC.balanceOf(realCreator);
 
         uint256 buyAmount = 100;
-        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, buyAmount);
+        uint256 buyPriceAfterFees = glayzeManager.getBuyPriceAfterFees(0, buyAmount, 0);
         uint256 buyPrice = glayzeManager.getBuyPrice(0, buyAmount);
         uint256 totalFees = glayzeManager.getTotalFees(0, buyPrice);
 
@@ -483,7 +513,7 @@ contract Buy is Test {
         USDC.approve(address(glayzeManager), type(uint256).max);
         AURA.approve(address(glayzeManager), type(uint256).max);
 
-        glayzeManager.createPost("Test Post", "TST", "");
+        glayzeManager.createPost(0, "Test Post", "TST", "");
 
         if (realCreator != address(0)) {
             vm.stopPrank();
