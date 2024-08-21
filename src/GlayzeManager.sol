@@ -34,7 +34,6 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     IERC20 public immutable USDC;
     IERC20 public immutable AURA;
     address public immutable protocolFeeDestination;
-    uint256 public totalValueDeposited;
     uint256 public usdcCreationPayment;
     uint256 public protocolFee;
     uint256 public realCreatorFee;
@@ -100,7 +99,6 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         USDC = IERC20(_usdc);
         AURA = IERC20(_aura);
         protocolFeeDestination = msg.sender;
-        totalValueDeposited = 0;
         usdcCreationPayment = 1e6; // 1 USDC
         protocolFee = 250; // 2.5%
         realCreatorFee = 50; // 0.05%
@@ -169,7 +167,7 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         auraReferralAmount = _auraReferralAmount;
     }
 
-    function setPrtocolFee(uint256 _protocolFee) external onlyOwner {
+    function setProtocolFee(uint256 _protocolFee) external onlyOwner {
         protocolFee = _protocolFee;
     }
 
@@ -201,7 +199,7 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     }
 
     function getBuyPriceAfterFees(uint256 postId, uint256 shares, uint256 aura)
-        public
+        external
         view
         validPost(postId)
         returns (uint256)
@@ -212,12 +210,12 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     }
 
     function getSellPriceAfterFees(uint256 postId, uint256 shares, uint256 aura)
-        public
+        external
         view
         validPost(postId)
         returns (uint256)
     {
-        uint256 price = getBuyPrice(postId, shares);
+        uint256 price = getSellPrice(postId, shares);
         uint256 priceAfterFees = price - getTotalFees(postId, price);
         return priceAfterFees > aura ? priceAfterFees - aura : 0;
     }
@@ -278,10 +276,9 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         newSupply = supply + shares;
         newPrice = shareInfo[postId].price + price;
 
-        // Update tokenInfo and totalValueDeposited
+        // Update tokenInfo
         shareInfo[postId].supply = newSupply;
         shareInfo[postId].price = newPrice;
-        totalValueDeposited += price;
         return (price, newSupply, newPrice);
     }
 
@@ -303,13 +300,12 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
             revert InsufficientShareBalance(postId, msg.sender, balanceOf[msg.sender][postId]);
         }
 
-        // Update tokenInfo and totalValueDeposited
+        // Update tokenInfo
         newSupply = supply - shares;
         newPrice = shareInfo[postId].price - sellPrice;
 
         shareInfo[postId].supply = newSupply;
         shareInfo[postId].price = newPrice;
-        totalValueDeposited -= sellPrice;
 
         return (sellPrice, newSupply, newPrice);
     }
@@ -380,7 +376,6 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
             (uint256 protocolFeeSplit, uint256 glayzeCreatorFeeSplit, uint256 realCreatorFeeSplit) =
                 getFeeSplit(postId, feesPaidInUsdc);
             if (glayzeCreatorFeeSplit > 0) {
-                console2.log("glayze creator", posts[postId].glayzeCreator);
                 require(
                     USDC.transferFrom(msg.sender, posts[postId].glayzeCreator, glayzeCreatorFeeSplit),
                     "USDCGlayzeCreatorTransferFailed"

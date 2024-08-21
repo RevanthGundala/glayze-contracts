@@ -9,4 +9,8 @@ contract Aura is ERC20 {
     constructor() ERC20("Aura", "AURA") {
         _mint(msg.sender, MAX_SUPPLY);
     }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
 }

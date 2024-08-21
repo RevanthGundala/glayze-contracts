@@ -500,8 +500,6 @@ contract Buy is Test {
             initialAliceUsdcBalance - buyPriceAfterFees + glayzeCreatorUsdcFee,
             "Alice should have received the contract creator fee"
         );
-
-        assertEq(glayzeManager.totalValueDeposited(), buyPrice, "Total value deposited should be the buy price");
     }
 
     function buySharesWithAura(uint256 aura, address realCreator) internal {
@@ -580,7 +578,6 @@ contract Buy is Test {
             "Alice USDC balance incorrect"
         );
 
-        assertEq(glayzeManager.totalValueDeposited(), buyPrice, "Total value deposited should be the buy price");
         vm.stopPrank();
     }
 }
