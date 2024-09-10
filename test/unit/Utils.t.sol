@@ -28,8 +28,8 @@ contract Utils is Test {
         uint256 aura,
         uint256 usdc,
         uint256 shares,
-        uint256 newSupply,
-        uint256 newPrice,
+        uint256 price,
+        uint256 supply,
         uint256 timestamp
     );
 
@@ -83,11 +83,6 @@ contract Utils is Test {
         assertEq(postURIResult, postURI, "Post URI should be set");
         assertEq(contractCreator, alice, "Contract creator should be set");
         assertEq(realCreator, address(0), "Real creator should be set");
-        assertEq(
-            glayzeManager.balanceOf(address(glayzeManager), 213490213414),
-            glayzeManager.MAX_SUPPLY(),
-            "Contract should have max supply of new token"
-        );
         assertEq(USDC.balanceOf(owner), glayzeManager.usdcCreationPayment(), "Owner should receive USDC payment");
         assertEq(
             USDC.balanceOf(alice),

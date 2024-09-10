@@ -24,12 +24,12 @@ contract Sell is Test {
     event Trade(
         uint256 postId,
         address trader,
-        bool isSell,
+        bool isBuy,
         uint256 aura,
         uint256 usdc,
         uint256 shares,
-        uint256 newSupply,
-        uint256 newPrice,
+        uint256 price,
+        uint256 supply,
         uint256 timestamp
     );
 

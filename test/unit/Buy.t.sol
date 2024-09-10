@@ -29,8 +29,8 @@ contract Buy is Test {
         uint256 aura,
         uint256 usdc,
         uint256 shares,
-        uint256 newSupply,
-        uint256 newPrice,
+        uint256 price,
+        uint256 supply,
         uint256 timestamp
     );
 
@@ -49,9 +49,6 @@ contract Buy is Test {
     }
 
     function testBuySharesWithoutAuraWithoutRealCreator() public {
-        vm.startPrank(address(glayzeManager));
-        glayzeManager.approve(address(glayzeManager), 0, type(uint256).max);
-        vm.stopPrank();
         USDC.mint(alice, STARTING_USER_BALANCE);
         vm.startPrank(alice);
         buySharesWithoutAura(address(0));
@@ -59,9 +56,6 @@ contract Buy is Test {
     }
 
     function testBuySharesWithoutAuraWithRealCreator() public {
-        vm.startPrank(address(glayzeManager));
-        glayzeManager.approve(address(glayzeManager), 0, type(uint256).max);
-        vm.stopPrank();
         USDC.mint(alice, STARTING_USER_BALANCE);
         vm.startPrank(alice);
         buySharesWithoutAura(bob);
@@ -69,9 +63,6 @@ contract Buy is Test {
     }
 
     function testBuySharesWithAuraGreaterThanFeesWithoutRealCreator() public {
-        vm.startPrank(address(glayzeManager));
-        glayzeManager.approve(address(glayzeManager), 0, type(uint256).max);
-        vm.stopPrank();
         USDC.mint(alice, STARTING_USER_BALANCE);
         vm.startPrank(alice);
         buySharesWithAura(100, (address(0)));
@@ -408,9 +399,6 @@ contract Buy is Test {
     }
 
     function testAuraDoesNotChange() public {
-        vm.startPrank(address(glayzeManager));
-        glayzeManager.approve(address(glayzeManager), 0, type(uint256).max);
-        vm.stopPrank();
         USDC.mint(alice, STARTING_USER_BALANCE);
         vm.startPrank(alice);
         USDC.approve(address(glayzeManager), type(uint256).max);
@@ -420,7 +408,6 @@ contract Buy is Test {
         uint256 initialBobAuraBalance = AURA.balanceOf(bob);
 
         uint256 buyAmount = 100;
-
         // Buy tokens
         glayzeManager.buyShares(0, buyAmount, 0);
 
@@ -467,11 +454,6 @@ contract Buy is Test {
             glayzeManager.balanceOf(alice, 0),
             initialAliceShareBalance + buyAmount,
             "Alice should have bought 100 tokens"
-        );
-        assertEq(
-            glayzeManager.balanceOf(address(glayzeManager), 0),
-            initialContractShareBalance - buyAmount,
-            "Contract balance should decrease by 100"
         );
 
         // USDC

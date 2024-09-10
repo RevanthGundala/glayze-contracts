@@ -21,6 +21,7 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
     error UserAlreadyReferred(address user);
     error SharesZero(uint256 postId);
     error PostAlreadyExists(uint256 postId);
+    error SupplyExceedsMax(uint256 postId, uint256 supply);
 
     ///////////////////
     // Constants
@@ -71,8 +72,8 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         uint256 aura,
         uint256 usdc,
         uint256 shares,
-        uint256 newSupply,
-        uint256 newPrice,
+        uint256 price,
+        uint256 supply,
         uint256 timestamp
     );
 
@@ -123,9 +124,6 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         // Emit event
         emit PostCreated(postId, msg.sender, name, symbol, postURI, block.timestamp);
 
-        // Mint MAX_SUPPLY shares to the contract
-        _mint(address(this), postId, MAX_SUPPLY);
-
         // Transfer usdcCreationPayment to Protocol
         require(USDC.transferFrom(msg.sender, protocolFeeDestination, usdcCreationPayment), "InsufficientUsdcBalance");
     }
@@ -136,10 +134,10 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         validPost(postId)
         sharesNotZero(postId, shares)
     {
-        (uint256 buyPrice, uint256 newSupply, uint256 newPrice) = _updateBuyState(postId, shares);
+        (uint256 buyPrice, uint256 supply, uint256 price) = _updateBuyState(postId, shares);
 
         // Emit event
-        emit Trade(postId, msg.sender, true, aura, buyPrice, shares, newSupply, newPrice, block.timestamp);
+        emit Trade(postId, msg.sender, true, aura, buyPrice, shares, supply, price, block.timestamp);
 
         // Distribute the fee to the creators
         _handleBuy(postId, shares, buyPrice, aura);
@@ -151,10 +149,10 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         validPost(postId)
         sharesNotZero(postId, shares)
     {
-        (uint256 sellPrice, uint256 newSupply, uint256 newPrice) = _updateSellState(postId, shares);
+        (uint256 sellPrice, uint256 supply, uint256 price) = _updateSellState(postId, shares);
 
         // Emit event
-        emit Trade(postId, msg.sender, false, aura, sellPrice, shares, newSupply, newPrice, block.timestamp);
+        emit Trade(postId, msg.sender, false, aura, sellPrice, shares, supply, price, block.timestamp);
 
         _handleSell(postId, shares, sellPrice, aura);
     }
@@ -264,30 +262,32 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
 
     function _updateBuyState(uint256 postId, uint256 shares)
         internal
-        returns (uint256 price, uint256 newSupply, uint256 newPrice)
+        returns (uint256 buyPrice, uint256 supply, uint256 price)
     {
-        // Store supply in local variable for reads
-        uint256 supply = shareInfo[postId].supply;
+        // Store in local variables for reads
+        supply = shareInfo[postId].supply;
+        price = shareInfo[postId].price;
 
         // Get the price of the post
-        price = getBuyPrice(postId, shares);
+        buyPrice = getBuyPrice(postId, shares);
+        uint256 newSupply = supply + shares;
 
-        // Calculate new supply and price
-        newSupply = supply + shares;
-        newPrice = shareInfo[postId].price + price;
+        if (newSupply > MAX_SUPPLY) revert SupplyExceedsMax(postId, newSupply);
 
         // Update tokenInfo
         shareInfo[postId].supply = newSupply;
-        shareInfo[postId].price = newPrice;
-        return (price, newSupply, newPrice);
+        shareInfo[postId].price = price + buyPrice;
+
+        return (buyPrice, supply, price);
     }
 
     function _updateSellState(uint256 postId, uint256 shares)
         internal
-        returns (uint256 sellPrice, uint256 newSupply, uint256 newPrice)
+        returns (uint256 sellPrice, uint256 supply, uint256 price)
     {
         // Check if the supply is enough to sell
-        uint256 supply = shareInfo[postId].supply;
+        supply = shareInfo[postId].supply;
+        price = shareInfo[postId].price;
 
         // Ensure atleast the amount of tokens to sell is available
         if (supply < shares) revert InsufficientShareSupply(postId, supply);
@@ -300,14 +300,11 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
             revert InsufficientShareBalance(postId, msg.sender, balanceOf[msg.sender][postId]);
         }
 
-        // Update tokenInfo
-        newSupply = supply - shares;
-        newPrice = shareInfo[postId].price - sellPrice;
+        // Update tokenInfo and return
+        shareInfo[postId].supply = supply - shares;
+        shareInfo[postId].price = shareInfo[postId].price - sellPrice;
 
-        shareInfo[postId].supply = newSupply;
-        shareInfo[postId].price = newPrice;
-
-        return (sellPrice, newSupply, newPrice);
+        return (sellPrice, supply, price);
     }
 
     function _handleBuy(uint256 postId, uint256 shares, uint256 buyPrice, uint256 aura) internal {
@@ -316,9 +313,7 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         // Transfer price to contract
         require(USDC.transferFrom(msg.sender, address(this), buyPrice), "USDCTransferFailed");
 
-        // Transfer tokens to user
-        // require(transferFrom(address(this), msg.sender, postId, shares), "BuyFailed");
-        _transfer(address(this), msg.sender, postId, shares);
+        _mint(msg.sender, postId, shares);
     }
 
     function _handleSell(uint256 postId, uint256 shares, uint256 sellPrice, uint256 aura) internal {
@@ -327,8 +322,7 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
         // Transfer price to sender
         require(USDC.transfer(msg.sender, sellPrice), "USDCTransferFailed");
 
-        // Transfer tokens to contract
-        require(transferFrom(msg.sender, address(this), postId, shares), "SellFailed");
+        _burn(msg.sender, postId, shares);
     }
 
     function _distributeFees(uint256 postId, uint256 price, uint256 aura, bool isBuy) internal {
@@ -396,10 +390,5 @@ contract GlayzeManager is ERC6909, Owned, ReentrancyGuard {
                 );
             }
         }
-    }
-
-    function _transfer(address from, address to, uint256 postId, uint256 amount) internal {
-        balanceOf[from][postId] -= amount;
-        balanceOf[to][postId] += amount;
     }
 }
